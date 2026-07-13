@@ -60,6 +60,16 @@ async function logAudit(
   });
 }
 
+/** Recompute a lead's score after leasing-side stage changes (viewings, offers). */
+export async function rescoreLeadById(leadId: string): Promise<void> {
+  try {
+    const supabase = await createClient();
+    await rescoreLead(supabase, leadId);
+  } catch {
+    // Scoring is best-effort; never fail the calling action over it.
+  }
+}
+
 /** Recompute the rule-engine score for a lead and persist it. */
 async function rescoreLead(
   supabase: Awaited<ReturnType<typeof createClient>>,

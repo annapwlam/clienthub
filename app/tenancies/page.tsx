@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { TenancyActions } from "@/components/tenancy-components";
+import {
+  RenewLeaseButton,
+  TenancyActions,
+} from "@/components/tenancy-components";
 import {
   TENANCY_STATUS_LABELS,
   formatDate,
@@ -121,7 +124,10 @@ export default async function TenanciesPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <TenancyActions tenancyId={t.id} status={t.status} />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {t.status === "active" && <RenewLeaseButton tenancy={t} />}
+                        <TenancyActions tenancyId={t.id} status={t.status} />
+                      </div>
                     </td>
                   </tr>
                 );

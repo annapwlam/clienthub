@@ -1,9 +1,13 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { createBooking, updateTenancyStatus } from "@/app/leasing-actions";
+import {
+  createBooking,
+  renewLease,
+  updateTenancyStatus,
+} from "@/app/leasing-actions";
 import { useToast } from "@/components/toast";
-import type { Space } from "@/lib/types";
+import type { Space, Tenancy } from "@/lib/types";
 
 const inputCls =
   "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
@@ -55,6 +59,104 @@ export function TenancyActions({
     );
   if (actions.length === 0) return <span>—</span>;
   return <div className="flex flex-wrap gap-1.5">{actions}</div>;
+}
+
+export function RenewLeaseButton({
+  tenancy,
+}: {
+  tenancy: Pick<Tenancy, "id" | "tenant_name" | "end_date" | "rent_monthly">;
+}) {
+  const [open, setOpen] = useState(false);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const toast = useToast();
+
+  function submit(formData: FormData) {
+    formData.set("tenancy_id", tenancy.id);
+    startTransition(async () => {
+      const result = await renewLease(formData);
+      if (result.ok) {
+        toast("Renewal drafted — pending signing", "success");
+        setFieldError(null);
+        setOpen(false);
+      } else {
+        setFieldError(result.error ?? null);
+        toast(result.error ?? "Couldn't save. Please try again.");
+      }
+    });
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-100"
+      >
+        ↻ Renew
+      </button>
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
+          onClick={(e) => e.target === e.currentTarget && setOpen(false)}
+        >
+          <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold">Renew lease</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {tenancy.tenant_name} — new term starts the day after the current
+              lease ends ({tenancy.end_date}).
+            </p>
+            <form action={submit} className="mt-4 space-y-4">
+              <label className="block text-sm">
+                <span className="mb-1 block font-medium text-slate-700">
+                  New term (months) <span className="text-rose-500">*</span>
+                </span>
+                <input
+                  name="term_months"
+                  type="number"
+                  min="1"
+                  defaultValue={12}
+                  required
+                  className={inputCls}
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block font-medium text-slate-700">
+                  New monthly rent
+                </span>
+                <input
+                  name="rent_monthly"
+                  type="number"
+                  min="0"
+                  step="100"
+                  defaultValue={tenancy.rent_monthly ?? ""}
+                  className={inputCls}
+                />
+              </label>
+              {fieldError && (
+                <p className="text-sm font-medium text-rose-600">{fieldError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={pending}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {pending ? "Saving…" : "Draft renewal"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 export function AddBookingButton({

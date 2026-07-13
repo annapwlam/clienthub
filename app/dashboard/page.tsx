@@ -44,11 +44,13 @@ function StatCard({
 
 export default async function DashboardPage() {
   const supabase = await createClient();
-  const [{ data: leads, error }, spacesRes, tenanciesRes] = await Promise.all([
-    supabase.from("leads").select("*"),
-    supabase.from("spaces").select("*"),
-    supabase.from("tenancies").select("*, spaces(code)"),
-  ]);
+  const [{ data: leads, error }, spacesRes, tenanciesRes, invoicesRes] =
+    await Promise.all([
+      supabase.from("leads").select("*"),
+      supabase.from("spaces").select("*"),
+      supabase.from("tenancies").select("*, spaces(code)"),
+      supabase.from("rent_invoices").select("amount, status, due_date"),
+    ]);
   // Leasing tables may not exist until migration 0002 is applied — degrade
   // gracefully to the classic pipeline dashboard rather than erroring.
   const spaces = (spacesRes.error ? [] : (spacesRes.data ?? [])) as import("@/lib/types").Space[];
@@ -58,6 +60,12 @@ export default async function DashboardPage() {
     spaces: { code: string } | null;
   })[];
   const leasingReady = !spacesRes.error;
+  const invoices = (invoicesRes.error ? [] : (invoicesRes.data ?? [])) as {
+    amount: number | null;
+    status: string;
+    due_date: string;
+  }[];
+  const billingReady = !invoicesRes.error;
 
   if (error) {
     return (
@@ -155,6 +163,12 @@ export default async function DashboardPage() {
   );
   const longCount = all.filter((l) => l.enquiry_type !== "short_term").length;
   const shortCount = all.filter((l) => l.enquiry_type === "short_term").length;
+  const outstandingRent = invoices
+    .filter((i) => i.status === "due")
+    .reduce((sum, i) => sum + (i.amount ?? 0), 0);
+  const overdueInvoices = invoices.filter(
+    (i) => i.status === "due" && i.due_date < todayStr,
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -226,11 +240,24 @@ export default async function DashboardPage() {
                 hint="Active leases needing renewal talks"
                 tone={expiring.length > 0 ? "warning" : "default"}
               />
-              <StatCard
-                label="Short-term bookings"
-                value={String(upcomingBookings.length)}
-                hint="Live or upcoming licences"
-              />
+              {billingReady ? (
+                <StatCard
+                  label="Outstanding rent"
+                  value={formatMoney(outstandingRent)}
+                  hint={
+                    overdueInvoices > 0
+                      ? `${overdueInvoices} invoice${overdueInvoices === 1 ? "" : "s"} overdue`
+                      : "No overdue invoices"
+                  }
+                  tone={overdueInvoices > 0 ? "warning" : "default"}
+                />
+              ) : (
+                <StatCard
+                  label="Short-term bookings"
+                  value={String(upcomingBookings.length)}
+                  hint="Live or upcoming licences"
+                />
+              )}
             </div>
           )}
 

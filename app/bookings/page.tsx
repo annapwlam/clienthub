@@ -16,6 +16,97 @@ interface BookingRow extends Tenancy {
   spaces: Pick<Space, "id" | "code" | "name"> | null;
 }
 
+// 8-week availability strip per short-term space.
+function AvailabilityCalendar({
+  spaces,
+  bookings,
+}: {
+  spaces: Pick<Space, "id" | "code" | "name">[];
+  bookings: BookingRow[];
+}) {
+  const DAYS = 56;
+  const start = new Date();
+  start.setDate(start.getDate() - 7);
+  start.setHours(0, 0, 0, 0);
+  const dayMs = 86_400_000;
+  const startMs = start.getTime();
+
+  const clampPct = (n: number) => Math.max(0, Math.min(100, n));
+  const todayPct = clampPct(((Date.now() - startMs) / (DAYS * dayMs)) * 100);
+
+  // Week tick labels along the top.
+  const weeks = Array.from({ length: 8 }, (_, i) => {
+    const d = new Date(startMs + i * 7 * dayMs);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  });
+
+  const PHASE_BAR: Record<string, string> = {
+    live: "bg-emerald-500",
+    upcoming: "bg-sky-500",
+    finished: "bg-slate-300",
+  };
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 className="font-semibold text-slate-900">Availability — next 8 weeks</h2>
+      <div className="mt-3 overflow-x-auto">
+        <div className="min-w-[640px]">
+          <div className="ml-24 grid grid-cols-8 border-b border-slate-100 pb-1 text-[10px] text-slate-400">
+            {weeks.map((w) => (
+              <span key={w}>{w}</span>
+            ))}
+          </div>
+          {spaces.map((s) => {
+            const spaceBookings = bookings.filter(
+              (b) =>
+                b.space_id === s.id &&
+                !["ended", "terminated"].includes(b.status),
+            );
+            return (
+              <div key={s.id} className="flex items-center gap-2 border-b border-slate-50 py-1.5">
+                <span className="w-22 min-w-22 shrink-0 truncate text-xs font-medium text-slate-600" style={{ width: 88 }}>
+                  {s.code}
+                </span>
+                <div className="relative h-6 flex-1 rounded bg-slate-50">
+                  <span
+                    className="absolute top-0 h-full w-px bg-rose-400"
+                    style={{ left: `${todayPct}%` }}
+                    title="Today"
+                  />
+                  {spaceBookings.map((b) => {
+                    const bStart = new Date(b.start_date + "T00:00:00").getTime();
+                    const bEnd = new Date(b.end_date + "T23:59:59").getTime();
+                    if (bEnd < startMs || bStart > startMs + DAYS * dayMs) return null;
+                    const left = clampPct(((bStart - startMs) / (DAYS * dayMs)) * 100);
+                    const right = clampPct(((bEnd - startMs) / (DAYS * dayMs)) * 100);
+                    const now = Date.now();
+                    const phase = bEnd < now ? "finished" : bStart > now ? "upcoming" : "live";
+                    return (
+                      <span
+                        key={b.id}
+                        title={`${b.tenant_name}: ${b.start_date} → ${b.end_date}`}
+                        className={`absolute top-0.5 flex h-5 items-center overflow-hidden rounded px-1.5 text-[10px] font-medium text-white ${PHASE_BAR[phase]}`}
+                        style={{ left: `${left}%`, width: `${Math.max(right - left, 2)}%` }}
+                      >
+                        <span className="truncate">{b.tenant_name}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <p className="mt-2 text-[11px] text-slate-400">
+        <span className="mr-3">🟩 live</span>
+        <span className="mr-3">🟦 upcoming</span>
+        <span>▌red line = today</span>
+      </p>
+    </section>
+  );
+}
+
 export default async function BookingsPage() {
   const supabase = await createClient();
   const [{ data: bookings, error }, { data: spaces }] = await Promise.all([
@@ -81,6 +172,13 @@ export default async function BookingsPage() {
           spaces={(spaces ?? []) as Pick<Space, "id" | "code" | "name" | "status" | "rate_daily">[]}
         />
       </div>
+
+      {(spaces ?? []).length > 0 && (
+        <AvailabilityCalendar
+          spaces={(spaces ?? []) as Pick<Space, "id" | "code" | "name">[]}
+          bookings={rows}
+        />
+      )}
 
       {rows.length === 0 ? (
         <div className="rounded-xl border-2 border-dashed border-slate-300 bg-white p-12 text-center">

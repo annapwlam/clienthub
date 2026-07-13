@@ -245,6 +245,19 @@ export interface Tenancy {
   created_at: string;
 }
 
+export interface RentInvoice {
+  id: string;
+  tenancy_id: string | null;
+  space_id: string | null;
+  period_start: string;
+  period_end: string;
+  due_date: string;
+  amount: number;
+  status: string; // due | paid | void
+  paid_at: string | null;
+  created_at: string;
+}
+
 export function durationLabel(value: number | null, unit: string | null) {
   if (!value || !unit) return "—";
   return `${value} ${unit}`;

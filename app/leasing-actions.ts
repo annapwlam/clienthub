@@ -2,9 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import type { ActionResult } from "@/app/actions";
+import { rescoreLeadById, type ActionResult } from "@/app/actions";
 
 type Supabase = Awaited<ReturnType<typeof createClient>>;
+
+/** Format a Date as YYYY-MM-DD in local time (toISOString shifts days across UTC). */
+function toDateStr(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 function fail(error: unknown): ActionResult {
   const message =
@@ -58,6 +63,7 @@ function revalidateLeasing() {
     "/offers",
     "/tenancies",
     "/bookings",
+    "/billing",
     "/leads",
     "/dashboard",
   ])
@@ -187,6 +193,7 @@ export async function scheduleViewing(formData: FormData): Promise<ActionResult>
       target_id: data.id,
       payload: { lead_id: leadId, space_id: spaceId, scheduled_at: scheduledAt },
     });
+    await rescoreLeadById(leadId);
     revalidateLeasing();
     return { ok: true, id: data.id };
   } catch (e) {
@@ -308,6 +315,7 @@ export async function createOffer(formData: FormData): Promise<ActionResult> {
       payload: { lead_id: leadId, space_id: spaceId, offer_type: offerType },
       risk_level: "medium",
     });
+    await rescoreLeadById(leadId);
     revalidateLeasing();
     return { ok: true, id: data.id };
   } catch (e) {
@@ -356,6 +364,7 @@ export async function updateOfferStatus(
         target_id: offerId,
         payload: { status },
       });
+      if (offer.lead_id) await rescoreLeadById(offer.lead_id);
       revalidateLeasing();
       return { ok: true, id: offerId };
     }
@@ -378,13 +387,13 @@ export async function updateOfferStatus(
       lead?.brand_name || lead?.company || lead?.full_name || "New tenant";
 
     const isLease = offer.offer_type === "long_term";
-    const start =
-      offer.start_date ?? new Date().toISOString().slice(0, 10);
+    const start = offer.start_date ?? toDateStr(new Date());
     let end = offer.end_date;
     if (!end) {
       const d = new Date(start + "T00:00:00");
       d.setMonth(d.getMonth() + (offer.term_months ?? 12));
-      end = d.toISOString().slice(0, 10);
+      d.setDate(d.getDate() - 1);
+      end = toDateStr(d);
     }
 
     const { data: tenancy, error: tenancyError } = await supabase
@@ -444,6 +453,7 @@ export async function updateOfferStatus(
       payload: { offer_id: offerId, tenant: tenantName },
       risk_level: "medium",
     });
+    if (offer.lead_id) await rescoreLeadById(offer.lead_id);
     revalidateLeasing();
     return { ok: true, id: tenancy.id };
   } catch (e) {
@@ -517,6 +527,214 @@ export async function createBooking(formData: FormData): Promise<ActionResult> {
     });
     revalidateLeasing();
     return { ok: true, id: data.id };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+/**
+ * One-click lease renewal: creates a follow-on tenancy starting the day after
+ * the current one ends, pending signing. The current lease stays active.
+ */
+export async function renewLease(formData: FormData): Promise<ActionResult> {
+  try {
+    const supabase = await createClient();
+    const tenancyId = String(formData.get("tenancy_id") ?? "");
+    const months = Number(String(formData.get("term_months") ?? "").trim());
+    const rentRaw = String(formData.get("rent_monthly") ?? "").trim();
+    if (!tenancyId || !months || months < 1)
+      return { ok: false, error: "Renewal term (months) is required." };
+
+    const { data: current, error: readError } = await supabase
+      .from("tenancies")
+      .select("*")
+      .eq("id", tenancyId)
+      .single();
+    if (readError || !current) return fail(readError ?? new Error("Tenancy not found."));
+    if (current.tenancy_type !== "lease")
+      return { ok: false, error: "Only long-term leases can be renewed here." };
+
+    const rent = rentRaw ? Number(rentRaw) : (current.rent_monthly ?? 0);
+    if (Number.isNaN(rent) || rent <= 0)
+      return { ok: false, error: "Renewal rent must be a positive number." };
+
+    const start = new Date(current.end_date + "T00:00:00");
+    start.setDate(start.getDate() + 1);
+    const end = new Date(start);
+    end.setMonth(end.getMonth() + months);
+    end.setDate(end.getDate() - 1);
+    const startStr = toDateStr(start);
+    const endStr = toDateStr(end);
+
+    // Guard against renewing twice.
+    const { data: clash } = await supabase
+      .from("tenancies")
+      .select("id")
+      .eq("space_id", current.space_id)
+      .in("status", ["pending_signing", "fitout", "active"])
+      .lte("start_date", endStr)
+      .gte("end_date", startStr)
+      .neq("id", tenancyId);
+    if (clash && clash.length > 0)
+      return { ok: false, error: "A renewal (or other tenancy) already covers this period." };
+
+    const { data: renewal, error } = await supabase
+      .from("tenancies")
+      .insert({
+        lead_id: current.lead_id,
+        space_id: current.space_id,
+        tenancy_type: "lease",
+        tenant_name: current.tenant_name,
+        start_date: startStr,
+        end_date: endStr,
+        rent_monthly: rent,
+        deposit: current.deposit,
+        status: "pending_signing",
+        notes: `Renewal of lease ${current.start_date} → ${current.end_date}`,
+      })
+      .select("id")
+      .single();
+    if (error) return fail(error);
+
+    await logActivity(supabase, {
+      lead_id: current.lead_id,
+      action_type: "lease_renewed",
+      description: `Renewal drafted for ${current.tenant_name}: ${months} months at $${rent}/mo from ${startStr}`,
+    });
+    await logAudit(supabase, {
+      action: "lease_renewed",
+      target_table: "tenancies",
+      target_id: renewal.id,
+      payload: { renewed_from: tenancyId, term_months: months, rent_monthly: rent },
+      risk_level: "medium",
+    });
+    revalidateLeasing();
+    return { ok: true, id: renewal.id };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// ── Rent invoices (0003) ─────────────────────────────────────────────────────
+
+/**
+ * Generate the rent schedule for a tenancy. Leases get one invoice per month
+ * (capped at 12 per run); licences get a single invoice for the full fee.
+ * Already-invoiced periods are skipped, so it is safe to re-run.
+ */
+export async function generateInvoices(tenancyId: string): Promise<ActionResult> {
+  try {
+    const supabase = await createClient();
+    const { data: tenancy, error: readError } = await supabase
+      .from("tenancies")
+      .select("*")
+      .eq("id", tenancyId)
+      .single();
+    if (readError || !tenancy) return fail(readError ?? new Error("Tenancy not found."));
+
+    const { data: existing, error: existingError } = await supabase
+      .from("rent_invoices")
+      .select("period_start")
+      .eq("tenancy_id", tenancyId)
+      .neq("status", "void");
+    if (existingError) return fail(existingError);
+    const invoiced = new Set((existing ?? []).map((i) => i.period_start));
+
+    type NewInvoice = {
+      tenancy_id: string;
+      space_id: string | null;
+      period_start: string;
+      period_end: string;
+      due_date: string;
+      amount: number;
+      status: "due";
+    };
+    const rows: NewInvoice[] = [];
+
+    if (tenancy.tenancy_type === "licence") {
+      if (!invoiced.has(tenancy.start_date) && (tenancy.fee_total ?? 0) > 0) {
+        rows.push({
+          tenancy_id: tenancyId,
+          space_id: tenancy.space_id,
+          period_start: tenancy.start_date,
+          period_end: tenancy.end_date,
+          due_date: tenancy.start_date,
+          amount: tenancy.fee_total!,
+          status: "due",
+        });
+      }
+    } else {
+      if ((tenancy.rent_monthly ?? 0) <= 0)
+        return { ok: false, error: "This lease has no monthly rent set." };
+      let cursor = new Date(tenancy.start_date + "T00:00:00");
+      const leaseEnd = new Date(tenancy.end_date + "T00:00:00");
+      while (cursor <= leaseEnd && rows.length < 12) {
+        const periodStart = toDateStr(cursor);
+        const periodEndDate = new Date(cursor);
+        periodEndDate.setMonth(periodEndDate.getMonth() + 1);
+        periodEndDate.setDate(periodEndDate.getDate() - 1);
+        const periodEnd =
+          periodEndDate > leaseEnd ? tenancy.end_date : toDateStr(periodEndDate);
+        if (!invoiced.has(periodStart)) {
+          rows.push({
+            tenancy_id: tenancyId,
+            space_id: tenancy.space_id,
+            period_start: periodStart,
+            period_end: periodEnd,
+            due_date: periodStart,
+            amount: tenancy.rent_monthly!,
+            status: "due",
+          });
+        }
+        cursor = new Date(periodEndDate);
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+
+    if (rows.length === 0)
+      return { ok: false, error: "Nothing to invoice — schedule is already generated." };
+
+    const { error } = await supabase.from("rent_invoices").insert(rows);
+    if (error) return fail(error);
+
+    await logAudit(supabase, {
+      action: "invoices_generated",
+      target_table: "rent_invoices",
+      target_id: tenancyId,
+      payload: { tenancy_id: tenancyId, count: rows.length },
+    });
+    revalidatePath("/billing");
+    revalidatePath("/dashboard");
+    return { ok: true, id: tenancyId };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function updateInvoiceStatus(
+  invoiceId: string,
+  status: "paid" | "void" | "due",
+): Promise<ActionResult> {
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase
+      .from("rent_invoices")
+      .update({
+        status,
+        paid_at: status === "paid" ? new Date().toISOString() : null,
+      })
+      .eq("id", invoiceId);
+    if (error) return fail(error);
+    await logAudit(supabase, {
+      action: "invoice_" + status,
+      target_table: "rent_invoices",
+      target_id: invoiceId,
+      payload: { status },
+      risk_level: status === "void" ? "medium" : "low",
+    });
+    revalidatePath("/billing");
+    revalidatePath("/dashboard");
+    return { ok: true, id: invoiceId };
   } catch (e) {
     return fail(e);
   }

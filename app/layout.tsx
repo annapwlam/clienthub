@@ -34,6 +34,7 @@ export default function RootLayout({
                 ["/offers", "Offers"],
                 ["/tenancies", "Tenancies"],
                 ["/bookings", "Bookings"],
+                ["/billing", "Billing"],
                 ["/dashboard", "Dashboard"],
               ].map(([href, label]) => (
                 <Link
