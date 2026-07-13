@@ -23,6 +23,8 @@ export function computeScore(input: ScoreInput): ScoreResult {
   let signals = 0;
 
   if (input.stage === "proposal") score += 30;
+  if (input.stage === "negotiation") score += 35;
+  if (input.stage === "viewing") score += 15;
   if (input.followUpCount >= 3) score += 20;
 
   const last = input.lastContactAt ?? input.createdAt;

@@ -44,7 +44,20 @@ function StatCard({
 
 export default async function DashboardPage() {
   const supabase = await createClient();
-  const { data: leads, error } = await supabase.from("leads").select("*");
+  const [{ data: leads, error }, spacesRes, tenanciesRes] = await Promise.all([
+    supabase.from("leads").select("*"),
+    supabase.from("spaces").select("*"),
+    supabase.from("tenancies").select("*, spaces(code)"),
+  ]);
+  // Leasing tables may not exist until migration 0002 is applied — degrade
+  // gracefully to the classic pipeline dashboard rather than erroring.
+  const spaces = (spacesRes.error ? [] : (spacesRes.data ?? [])) as import("@/lib/types").Space[];
+  const tenancies = (tenanciesRes.error
+    ? []
+    : (tenanciesRes.data ?? [])) as (import("@/lib/types").Tenancy & {
+    spaces: { code: string } | null;
+  })[];
+  const leasingReady = !spacesRes.error;
 
   if (error) {
     return (
@@ -106,6 +119,43 @@ export default async function DashboardPage() {
 
   const empty = all.length === 0;
 
+  // ── Leasing metrics (0002) ──
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const leasable = spaces.filter((s) => s.status !== "maintenance");
+  const occupancyRate =
+    leasable.length === 0
+      ? 0
+      : Math.round(
+          (leasable.filter((s) => s.status === "occupied").length /
+            leasable.length) *
+            100,
+        );
+  const activeLeases = tenancies.filter(
+    (t) => t.tenancy_type === "lease" && t.status === "active",
+  );
+  const expiring = activeLeases
+    .filter(
+      (t) =>
+        (new Date(t.end_date + "T00:00:00").getTime() - Date.now()) / 86_400_000 <=
+        90,
+    )
+    .sort((a, b) => (a.end_date < b.end_date ? -1 : 1));
+  const upcomingBookings = tenancies
+    .filter(
+      (t) =>
+        t.tenancy_type === "licence" &&
+        ["pending_signing", "active"].includes(t.status) &&
+        t.end_date >= todayStr,
+    )
+    .sort((a, b) => (a.start_date < b.start_date ? -1 : 1))
+    .slice(0, 6);
+  const recurringRent = activeLeases.reduce(
+    (sum, t) => sum + (t.rent_monthly ?? 0),
+    0,
+  );
+  const longCount = all.filter((l) => l.enquiry_type !== "short_term").length;
+  const shortCount = all.filter((l) => l.enquiry_type === "short_term").length;
+
   return (
     <div className="space-y-6">
       <div>
@@ -133,14 +183,14 @@ export default async function DashboardPage() {
         <>
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <StatCard
-              label="Total leads"
+              label="Enquiries"
               value={String(all.length)}
-              hint={`${countByStage.new} new · ${countByStage.qualified} qualified · ${countByStage.proposal} proposal`}
+              hint={`${longCount} long-term · ${shortCount} short-term`}
             />
             <StatCard
-              label="Win rate"
+              label="Conversion rate"
               value={`${winRate}%`}
-              hint={`${won} won / ${lost} lost`}
+              hint={`${won} signed / ${lost} lost`}
               tone={winRate >= 50 ? "positive" : "default"}
             />
             <StatCard
@@ -149,12 +199,100 @@ export default async function DashboardPage() {
               hint="Open pipeline × stage probability"
             />
             <StatCard
-              label="Closed-won value"
+              label="Signed value"
               value={formatMoney(wonValue)}
-              hint={`across ${won} won lead${won === 1 ? "" : "s"}`}
+              hint={`across ${won} signed enquir${won === 1 ? "y" : "ies"}`}
               tone="positive"
             />
           </div>
+
+          {leasingReady && (
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <StatCard
+                label="Occupancy"
+                value={`${occupancyRate}%`}
+                hint={`${leasable.filter((s) => s.status === "occupied").length} of ${leasable.length} leasable spaces`}
+                tone={occupancyRate >= 80 ? "positive" : "default"}
+              />
+              <StatCard
+                label="Recurring rent"
+                value={`${formatMoney(recurringRent)}/mo`}
+                hint={`${activeLeases.length} active lease${activeLeases.length === 1 ? "" : "s"}`}
+                tone="positive"
+              />
+              <StatCard
+                label="Expiring ≤ 90 days"
+                value={String(expiring.length)}
+                hint="Active leases needing renewal talks"
+                tone={expiring.length > 0 ? "warning" : "default"}
+              />
+              <StatCard
+                label="Short-term bookings"
+                value={String(upcomingBookings.length)}
+                hint="Live or upcoming licences"
+              />
+            </div>
+          )}
+
+          {leasingReady && (expiring.length > 0 || upcomingBookings.length > 0) && (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 className="font-semibold text-slate-900">
+                  Renewal radar{" "}
+                  {expiring.length > 0 && (
+                    <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                      {expiring.length}
+                    </span>
+                  )}
+                </h2>
+                {expiring.length === 0 ? (
+                  <p className="mt-4 rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400">
+                    No leases expiring in the next 90 days.
+                  </p>
+                ) : (
+                  <ul className="mt-3 divide-y divide-slate-100">
+                    {expiring.map((t) => (
+                      <li key={t.id} className="flex items-center justify-between gap-3 py-2.5">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">{t.tenant_name}</p>
+                          <p className="text-xs text-slate-500">
+                            {t.spaces?.code ?? "—"} · {formatMoney(t.rent_monthly)}/mo
+                          </p>
+                        </div>
+                        <span className="text-xs font-semibold text-amber-600">
+                          ends {formatDate(t.end_date)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+              <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 className="font-semibold text-slate-900">Upcoming short-term use</h2>
+                {upcomingBookings.length === 0 ? (
+                  <p className="mt-4 rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400">
+                    No live or upcoming bookings.
+                  </p>
+                ) : (
+                  <ul className="mt-3 divide-y divide-slate-100">
+                    {upcomingBookings.map((t) => (
+                      <li key={t.id} className="flex items-center justify-between gap-3 py-2.5">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">{t.tenant_name}</p>
+                          <p className="text-xs text-slate-500">
+                            {t.spaces?.code ?? "—"} · {formatMoney(t.fee_total)}
+                          </p>
+                        </div>
+                        <span className="text-xs text-slate-500">
+                          {formatDate(t.start_date)} → {formatDate(t.end_date)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
             <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">

@@ -26,25 +26,24 @@ export default function RootLayout({
               </span>
               ClientHub
             </Link>
-            <nav className="flex items-center gap-1 text-sm">
-              <Link
-                href="/leads"
-                className="rounded-md px-3 py-1.5 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-              >
-                Pipeline
-              </Link>
-              <Link
-                href="/dashboard"
-                className="rounded-md px-3 py-1.5 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-              >
-                Dashboard
-              </Link>
-              <Link
-                href="/deals"
-                className="rounded-md px-3 py-1.5 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-              >
-                Deals
-              </Link>
+            <nav className="flex items-center gap-0.5 overflow-x-auto text-sm">
+              {[
+                ["/leads", "Enquiries"],
+                ["/spaces", "Spaces"],
+                ["/viewings", "Viewings"],
+                ["/offers", "Offers"],
+                ["/tenancies", "Tenancies"],
+                ["/bookings", "Bookings"],
+                ["/dashboard", "Dashboard"],
+              ].map(([href, label]) => (
+                <Link
+                  key={href}
+                  href={href}
+                  className="whitespace-nowrap rounded-md px-2.5 py-1.5 font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                >
+                  {label}
+                </Link>
+              ))}
             </nav>
             <span className="ml-auto hidden sm:inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />

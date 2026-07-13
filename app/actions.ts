@@ -109,20 +109,34 @@ export async function createLead(formData: FormData): Promise<ActionResult> {
       return { ok: false, error: "Deal value must be a positive number." };
 
     const nextAction = String(formData.get("next_action_date") ?? "").trim();
+    const str = (k: string) => String(formData.get(k) ?? "").trim() || null;
+    const num = (k: string) => {
+      const v = String(formData.get(k) ?? "").trim();
+      return v ? Number(v) : null;
+    };
 
     const { data, error } = await supabase
       .from("leads")
       .insert({
         team_id: DEMO_TEAM_ID,
         full_name,
-        company: String(formData.get("company") ?? "").trim() || null,
-        email: String(formData.get("email") ?? "").trim() || null,
-        phone: String(formData.get("phone") ?? "").trim() || null,
-        source: String(formData.get("source") ?? "").trim() || null,
+        company: str("company"),
+        email: str("email"),
+        phone: str("phone"),
+        source: str("source"),
         stage,
-        owner_name: String(formData.get("owner_name") ?? "").trim() || null,
+        owner_name: str("owner_name"),
         deal_value,
         next_action_date: nextAction || null,
+        enquiry_type: str("enquiry_type") ?? "long_term",
+        brand_name: str("brand_name"),
+        business_type: str("business_type"),
+        space_id: str("space_id"),
+        preferred_size_sqft: num("preferred_size_sqft"),
+        budget: num("budget"),
+        target_start_date: str("target_start_date"),
+        duration_value: num("duration_value"),
+        duration_unit: str("duration_unit"),
       })
       .select("id, owner_name, company")
       .single();

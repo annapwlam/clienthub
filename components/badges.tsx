@@ -3,7 +3,9 @@ import { STAGE_LABELS, type Stage } from "@/lib/types";
 const STAGE_STYLES: Record<Stage, string> = {
   new: "bg-sky-50 text-sky-700 ring-sky-200",
   qualified: "bg-violet-50 text-violet-700 ring-violet-200",
+  viewing: "bg-cyan-50 text-cyan-700 ring-cyan-200",
   proposal: "bg-amber-50 text-amber-700 ring-amber-200",
+  negotiation: "bg-orange-50 text-orange-700 ring-orange-200",
   won: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   lost: "bg-rose-50 text-rose-700 ring-rose-200",
 };

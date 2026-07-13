@@ -1,13 +1,38 @@
-export type Stage = "new" | "qualified" | "proposal" | "won" | "lost";
+export type Stage =
+  | "new"
+  | "qualified"
+  | "viewing"
+  | "proposal"
+  | "negotiation"
+  | "won"
+  | "lost";
 
-export const STAGES: Stage[] = ["new", "qualified", "proposal", "won", "lost"];
-export const OPEN_STAGES: Stage[] = ["new", "qualified", "proposal"];
+// Leasing funnel order: first enquiry → qualified → viewing → offer →
+// negotiation → signed (won) / lost.
+export const STAGES: Stage[] = [
+  "new",
+  "qualified",
+  "viewing",
+  "proposal",
+  "negotiation",
+  "won",
+  "lost",
+];
+export const OPEN_STAGES: Stage[] = [
+  "new",
+  "qualified",
+  "viewing",
+  "proposal",
+  "negotiation",
+];
 
 export const STAGE_LABELS: Record<Stage, string> = {
-  new: "New",
+  new: "New Enquiry",
   qualified: "Qualified",
-  proposal: "Proposal",
-  won: "Won",
+  viewing: "Viewing",
+  proposal: "Offer",
+  negotiation: "Negotiation",
+  won: "Signed",
   lost: "Lost",
 };
 
@@ -46,8 +71,85 @@ export const OUTCOME_LABELS: Record<string, string> = {
 // Probability weights per open stage, used for the revenue forecast.
 export const STAGE_WEIGHTS: Record<string, number> = {
   new: 0.1,
-  qualified: 0.3,
+  qualified: 0.25,
+  viewing: 0.4,
   proposal: 0.6,
+  negotiation: 0.75,
+};
+
+export const ENQUIRY_TYPES = ["long_term", "short_term"] as const;
+export type EnquiryType = (typeof ENQUIRY_TYPES)[number];
+export const ENQUIRY_TYPE_LABELS: Record<string, string> = {
+  long_term: "Long-term lease",
+  short_term: "Short-term use",
+};
+
+export const BUSINESS_TYPES = [
+  "fnb",
+  "fashion",
+  "services",
+  "electronics",
+  "entertainment",
+  "popup_retail",
+  "events",
+  "other",
+] as const;
+export const BUSINESS_TYPE_LABELS: Record<string, string> = {
+  fnb: "F&B",
+  fashion: "Fashion & Lifestyle",
+  services: "Services",
+  electronics: "Electronics",
+  entertainment: "Entertainment",
+  popup_retail: "Pop-up Retail",
+  events: "Events & Exhibitions",
+  other: "Other",
+};
+
+export const SPACE_TYPES = ["unit", "kiosk", "atrium", "event_space"] as const;
+export const SPACE_TYPE_LABELS: Record<string, string> = {
+  unit: "Retail Unit",
+  kiosk: "Kiosk",
+  atrium: "Atrium",
+  event_space: "Event Space",
+};
+
+export const SPACE_STATUSES = [
+  "vacant",
+  "reserved",
+  "occupied",
+  "maintenance",
+] as const;
+export type SpaceStatus = (typeof SPACE_STATUSES)[number];
+
+export const VIEWING_STATUSES = [
+  "scheduled",
+  "completed",
+  "no_show",
+  "cancelled",
+] as const;
+
+export const OFFER_STATUSES = [
+  "draft",
+  "sent",
+  "negotiating",
+  "accepted",
+  "rejected",
+  "expired",
+] as const;
+
+export const TENANCY_STATUSES = [
+  "pending_signing",
+  "fitout",
+  "active",
+  "ended",
+  "terminated",
+] as const;
+export const TENANCY_STATUS_LABELS: Record<string, string> = {
+  pending_signing: "Pending signing",
+  fitout: "Fit-out",
+  active: "Active",
+  ended: "Ended",
+  terminated: "Terminated",
 };
 
 export interface Lead {
@@ -70,6 +172,82 @@ export interface Lead {
   score_review_status: string | null;
   next_action_date: string | null;
   created_at: string;
+  // Leasing enquiry fields (0002)
+  enquiry_type: string | null;
+  brand_name: string | null;
+  business_type: string | null;
+  space_id: string | null;
+  preferred_size_sqft: number | null;
+  budget: number | null;
+  target_start_date: string | null;
+  duration_value: number | null;
+  duration_unit: string | null;
+}
+
+export interface Space {
+  id: string;
+  code: string;
+  name: string;
+  space_type: string;
+  floor: string | null;
+  zone: string | null;
+  size_sqft: number | null;
+  rent_monthly: number | null;
+  rate_daily: number | null;
+  status: SpaceStatus;
+  suitable_for: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface Viewing {
+  id: string;
+  lead_id: string | null;
+  space_id: string | null;
+  scheduled_at: string;
+  status: string;
+  feedback: string | null;
+  created_at: string;
+}
+
+export interface Offer {
+  id: string;
+  lead_id: string | null;
+  space_id: string | null;
+  offer_type: string;
+  rent_monthly: number | null;
+  fee_total: number | null;
+  deposit: number | null;
+  term_months: number | null;
+  start_date: string | null;
+  end_date: string | null;
+  rent_free_weeks: number | null;
+  valid_until: string | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface Tenancy {
+  id: string;
+  lead_id: string | null;
+  offer_id: string | null;
+  space_id: string | null;
+  tenancy_type: string;
+  tenant_name: string;
+  start_date: string;
+  end_date: string;
+  rent_monthly: number | null;
+  fee_total: number | null;
+  deposit: number | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+}
+
+export function durationLabel(value: number | null, unit: string | null) {
+  if (!value || !unit) return "—";
+  return `${value} ${unit}`;
 }
 
 export interface FollowUp {

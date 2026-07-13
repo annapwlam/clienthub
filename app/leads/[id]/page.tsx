@@ -8,13 +8,19 @@ import {
   WonLostButtons,
 } from "@/components/lead-detail-actions";
 import {
+  BUSINESS_TYPE_LABELS,
+  ENQUIRY_TYPE_LABELS,
   OUTCOME_LABELS,
   SOURCE_LABELS,
+  durationLabel,
   formatDate,
   formatMoney,
   type Activity,
   type FollowUp,
   type Lead,
+  type Offer,
+  type Space,
+  type Viewing,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -42,26 +48,56 @@ export default async function LeadDetailPage({
     .maybeSingle();
   if (!lead) notFound();
 
-  const [{ data: followUps }, { data: activities }, { data: deal }] =
-    await Promise.all([
-      supabase
-        .from("follow_ups")
-        .select("*")
-        .eq("lead_id", id)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("activities")
-        .select("*")
-        .eq("lead_id", id)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("deals")
-        .select("id, title, value, currency, status")
-        .eq("lead_id", id)
-        .maybeSingle(),
-    ]);
+  const [
+    { data: followUps },
+    { data: activities },
+    { data: deal },
+    viewingsRes,
+    offersRes,
+    spaceRes,
+  ] = await Promise.all([
+    supabase
+      .from("follow_ups")
+      .select("*")
+      .eq("lead_id", id)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("activities")
+      .select("*")
+      .eq("lead_id", id)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("deals")
+      .select("id, title, value, currency, status")
+      .eq("lead_id", id)
+      .maybeSingle(),
+    supabase
+      .from("viewings")
+      .select("*, spaces(code, name)")
+      .eq("lead_id", id)
+      .order("scheduled_at", { ascending: false }),
+    supabase
+      .from("offers")
+      .select("*, spaces(code, name)")
+      .eq("lead_id", id)
+      .order("created_at", { ascending: false }),
+    (lead as Lead).space_id
+      ? supabase.from("spaces").select("code, name").eq("id", (lead as Lead).space_id!).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]);
 
   const l = lead as Lead;
+  // Leasing tables may be missing until migration 0002 is applied.
+  const viewings = (viewingsRes.error ? [] : (viewingsRes.data ?? [])) as (Viewing & {
+    spaces: Pick<Space, "code" | "name"> | null;
+  })[];
+  const offers = (offersRes.error ? [] : (offersRes.data ?? [])) as (Offer & {
+    spaces: Pick<Space, "code" | "name"> | null;
+  })[];
+  const interestedSpace = (spaceRes.error ? null : spaceRes.data) as Pick<
+    Space,
+    "code" | "name"
+  > | null;
 
   return (
     <div className="space-y-6">
@@ -73,14 +109,26 @@ export default async function LeadDetailPage({
 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold text-slate-900">
-              {l.company || l.full_name}
+              {l.brand_name || l.company || l.full_name}
             </h1>
             <StageBadge stage={l.stage} />
             <ScoreBadge score={l.score} />
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${
+                l.enquiry_type === "short_term"
+                  ? "bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200"
+                  : "bg-indigo-50 text-indigo-700 ring-indigo-200"
+              }`}
+            >
+              {ENQUIRY_TYPE_LABELS[l.enquiry_type ?? "long_term"]}
+            </span>
           </div>
-          {l.company && <p className="mt-0.5 text-slate-500">{l.full_name}</p>}
+          <p className="mt-0.5 text-slate-500">
+            {l.full_name}
+            {l.company ? ` · ${l.company}` : ""}
+          </p>
         </div>
         <WonLostButtons lead={l} />
       </div>
@@ -152,8 +200,102 @@ export default async function LeadDetailPage({
                 : "—"}
             </dd>
           </div>
+          <div>
+            <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              Business type
+            </dt>
+            <dd className="mt-0.5 text-slate-800">
+              {l.business_type
+                ? (BUSINESS_TYPE_LABELS[l.business_type] ?? l.business_type)
+                : "—"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              Interested space
+            </dt>
+            <dd className="mt-0.5 text-slate-800">
+              {interestedSpace
+                ? `${interestedSpace.code} · ${interestedSpace.name}`
+                : "—"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              Size / budget
+            </dt>
+            <dd className="mt-0.5 text-slate-800">
+              {l.preferred_size_sqft ? `${l.preferred_size_sqft} sqft` : "—"} ·{" "}
+              {l.budget ? formatMoney(l.budget) : "—"}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              Target start / duration
+            </dt>
+            <dd className="mt-0.5 text-slate-800">
+              {formatDate(l.target_start_date)} ·{" "}
+              {durationLabel(l.duration_value, l.duration_unit)}
+            </dd>
+          </div>
         </dl>
       </section>
+
+      {(viewings.length > 0 || offers.length > 0) && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-slate-900">Viewings</h2>
+              <Link href="/viewings" className="text-xs font-medium text-indigo-600 hover:underline">
+                Manage →
+              </Link>
+            </div>
+            <ul className="mt-3 space-y-2">
+              {viewings.length === 0 && (
+                <li className="text-sm text-slate-400">No viewings for this enquiry.</li>
+              )}
+              {viewings.map((v) => (
+                <li key={v.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                  <span className="text-slate-700">
+                    {v.spaces?.code ?? "—"} ·{" "}
+                    {new Date(v.scheduled_at).toLocaleString("en-US", {
+                      month: "short",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  <span className="text-xs font-medium text-slate-500">{v.status.replace("_", " ")}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-slate-900">Offers</h2>
+              <Link href="/offers" className="text-xs font-medium text-indigo-600 hover:underline">
+                Manage →
+              </Link>
+            </div>
+            <ul className="mt-3 space-y-2">
+              {offers.length === 0 && (
+                <li className="text-sm text-slate-400">No offers for this enquiry.</li>
+              )}
+              {offers.map((o) => (
+                <li key={o.id} className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                  <span className="text-slate-700">
+                    {o.spaces?.code ?? "—"} ·{" "}
+                    {o.offer_type === "long_term"
+                      ? `${formatMoney(o.rent_monthly)}/mo × ${o.term_months ?? "—"}mo`
+                      : `${formatMoney(o.fee_total)} licence`}
+                  </span>
+                  <span className="text-xs font-medium text-slate-500">{o.status}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
