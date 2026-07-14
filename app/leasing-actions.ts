@@ -6,6 +6,17 @@ import { rescoreLeadById, type ActionResult } from "@/app/actions";
 
 type Supabase = Awaited<ReturnType<typeof createClient>>;
 
+const SIGN_IN_ERROR = "Please sign in to make changes.";
+
+async function requireUser(
+  supabase: Supabase,
+): Promise<{ id: string; email?: string } | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user ? { id: user.id, email: user.email ?? undefined } : null;
+}
+
 /** Format a Date as YYYY-MM-DD in local time (toISOString shifts days across UTC). */
 function toDateStr(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -19,6 +30,7 @@ function fail(error: unknown): ActionResult {
 
 async function logActivity(
   supabase: Supabase,
+  userId: string,
   entry: {
     lead_id?: string | null;
     action_type: string;
@@ -27,6 +39,7 @@ async function logActivity(
   },
 ) {
   await supabase.from("activities").insert({
+    user_id: userId,
     lead_id: entry.lead_id ?? null,
     action_type: entry.action_type,
     description: entry.description,
@@ -36,6 +49,7 @@ async function logActivity(
 
 async function logAudit(
   supabase: Supabase,
+  userId: string,
   entry: {
     actor?: string | null;
     action: string;
@@ -46,6 +60,7 @@ async function logAudit(
   },
 ) {
   await supabase.from("audit_logs").insert({
+    user_id: userId,
     actor: entry.actor ?? "anonymous",
     action: entry.action,
     target_table: entry.target_table,
@@ -75,6 +90,8 @@ function revalidateLeasing() {
 export async function createSpace(formData: FormData): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const code = String(formData.get("code") ?? "").trim();
     const name = String(formData.get("name") ?? "").trim();
     if (!code || !name)
@@ -88,6 +105,7 @@ export async function createSpace(formData: FormData): Promise<ActionResult> {
     const { data, error } = await supabase
       .from("spaces")
       .insert({
+        user_id: user.id,
         code,
         name,
         space_type: String(formData.get("space_type") ?? "unit"),
@@ -103,7 +121,7 @@ export async function createSpace(formData: FormData): Promise<ActionResult> {
       .single();
     if (error) return fail(error);
 
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "space_created",
       target_table: "spaces",
       target_id: data.id,
@@ -122,12 +140,14 @@ export async function updateSpaceStatus(
 ): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { error } = await supabase
       .from("spaces")
       .update({ status })
       .eq("id", spaceId);
     if (error) return fail(error);
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "space_status_changed",
       target_table: "spaces",
       target_id: spaceId,
@@ -145,6 +165,8 @@ export async function updateSpaceStatus(
 export async function scheduleViewing(formData: FormData): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const leadId = String(formData.get("lead_id") ?? "");
     const spaceId = String(formData.get("space_id") ?? "");
     const scheduledAt = String(formData.get("scheduled_at") ?? "").trim();
@@ -161,6 +183,7 @@ export async function scheduleViewing(formData: FormData): Promise<ActionResult>
     const { data, error } = await supabase
       .from("viewings")
       .insert({
+        user_id: user.id,
         lead_id: leadId,
         space_id: spaceId,
         scheduled_at: new Date(scheduledAt).toISOString(),
@@ -173,20 +196,20 @@ export async function scheduleViewing(formData: FormData): Promise<ActionResult>
     // A scheduled viewing advances early-funnel enquiries to the Viewing stage.
     if (["new", "qualified"].includes(lead.stage)) {
       await supabase.from("leads").update({ stage: "viewing" }).eq("id", leadId);
-      await logActivity(supabase, {
+      await logActivity(supabase, user.id, {
         lead_id: leadId,
         action_type: "stage_change",
         description: "Stage moved to Viewing (site visit scheduled)",
         performed_by: lead.owner_name,
       });
     }
-    await logActivity(supabase, {
+    await logActivity(supabase, user.id, {
       lead_id: leadId,
       action_type: "viewing_scheduled",
       description: `Site viewing scheduled`,
       performed_by: lead.owner_name,
     });
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       actor: lead.owner_name,
       action: "viewing_scheduled",
       target_table: "viewings",
@@ -208,6 +231,8 @@ export async function updateViewingStatus(
 ): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { data: viewing, error } = await supabase
       .from("viewings")
       .update({ status, ...(feedback ? { feedback } : {}) })
@@ -216,12 +241,12 @@ export async function updateViewingStatus(
       .single();
     if (error) return fail(error);
 
-    await logActivity(supabase, {
+    await logActivity(supabase, user.id, {
       lead_id: viewing.lead_id,
       action_type: "viewing_" + status,
       description: `Viewing marked ${status.replace("_", " ")}${feedback ? `: ${feedback.slice(0, 80)}` : ""}`,
     });
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "viewing_status_changed",
       target_table: "viewings",
       target_id: viewingId,
@@ -239,6 +264,8 @@ export async function updateViewingStatus(
 export async function createOffer(formData: FormData): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const leadId = String(formData.get("lead_id") ?? "");
     const spaceId = String(formData.get("space_id") ?? "");
     const offerType = String(formData.get("offer_type") ?? "long_term");
@@ -270,6 +297,7 @@ export async function createOffer(formData: FormData): Promise<ActionResult> {
     const { data, error } = await supabase
       .from("offers")
       .insert({
+        user_id: user.id,
         lead_id: leadId,
         space_id: spaceId,
         offer_type: offerType,
@@ -291,14 +319,14 @@ export async function createOffer(formData: FormData): Promise<ActionResult> {
     // Sending an offer advances the enquiry to the Offer stage.
     if (["new", "qualified", "viewing"].includes(lead.stage)) {
       await supabase.from("leads").update({ stage: "proposal" }).eq("id", leadId);
-      await logActivity(supabase, {
+      await logActivity(supabase, user.id, {
         lead_id: leadId,
         action_type: "stage_change",
         description: "Stage moved to Offer (quotation sent)",
         performed_by: lead.owner_name,
       });
     }
-    await logActivity(supabase, {
+    await logActivity(supabase, user.id, {
       lead_id: leadId,
       action_type: "offer_sent",
       description:
@@ -307,7 +335,7 @@ export async function createOffer(formData: FormData): Promise<ActionResult> {
           : `Offer sent: $${feeTotal} licence fee`,
       performed_by: lead.owner_name,
     });
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       actor: lead.owner_name,
       action: "offer_created",
       target_table: "offers",
@@ -333,6 +361,8 @@ export async function updateOfferStatus(
 ): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { data: offer, error: readError } = await supabase
       .from("offers")
       .select("*, leads(id, owner_name, stage, company, full_name, brand_name), spaces(id, code, name)")
@@ -352,13 +382,13 @@ export async function updateOfferStatus(
           .update({ stage: "negotiation" })
           .eq("id", offer.lead_id)
           .in("stage", ["new", "qualified", "viewing", "proposal"]);
-        await logActivity(supabase, {
+        await logActivity(supabase, user.id, {
           lead_id: offer.lead_id,
           action_type: "stage_change",
           description: "Stage moved to Negotiation",
         });
       }
-      await logAudit(supabase, {
+      await logAudit(supabase, user.id, {
         action: "offer_status_changed",
         target_table: "offers",
         target_id: offerId,
@@ -399,6 +429,7 @@ export async function updateOfferStatus(
     const { data: tenancy, error: tenancyError } = await supabase
       .from("tenancies")
       .insert({
+        user_id: user.id,
         lead_id: offer.lead_id,
         offer_id: offerId,
         space_id: offer.space_id,
@@ -430,6 +461,7 @@ export async function updateOfferStatus(
         .eq("id", offer.lead_id);
       // Keep the generic deals record for revenue history.
       await supabase.from("deals").insert({
+        user_id: user.id,
         lead_id: offer.lead_id,
         title: `${tenantName} — ${isLease ? "Lease" : "Licence"} ${(offer.spaces as { code?: string } | null)?.code ?? ""}`.trim(),
         value: isLease
@@ -438,14 +470,14 @@ export async function updateOfferStatus(
         status: "active",
         closed_at: new Date().toISOString(),
       });
-      await logActivity(supabase, {
+      await logActivity(supabase, user.id, {
         lead_id: offer.lead_id,
         action_type: "lead_won",
         description: `Offer accepted — ${isLease ? "lease" : "licence"} created, pending signing`,
         performed_by: lead?.owner_name,
       });
     }
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       actor: lead?.owner_name,
       action: "offer_accepted",
       target_table: "tenancies",
@@ -467,6 +499,8 @@ export async function updateOfferStatus(
 export async function createBooking(formData: FormData): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const tenantName = String(formData.get("tenant_name") ?? "").trim();
     const spaceId = String(formData.get("space_id") ?? "");
     const start = String(formData.get("start_date") ?? "").trim();
@@ -499,6 +533,7 @@ export async function createBooking(formData: FormData): Promise<ActionResult> {
     const { data, error } = await supabase
       .from("tenancies")
       .insert({
+        user_id: user.id,
         space_id: spaceId,
         tenancy_type: "licence",
         tenant_name: tenantName,
@@ -518,7 +553,7 @@ export async function createBooking(formData: FormData): Promise<ActionResult> {
       .update({ status: "reserved" })
       .eq("id", spaceId)
       .eq("status", "vacant");
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "booking_created",
       target_table: "tenancies",
       target_id: data.id,
@@ -539,6 +574,8 @@ export async function createBooking(formData: FormData): Promise<ActionResult> {
 export async function renewLease(formData: FormData): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const tenancyId = String(formData.get("tenancy_id") ?? "");
     const months = Number(String(formData.get("term_months") ?? "").trim());
     const rentRaw = String(formData.get("rent_monthly") ?? "").trim();
@@ -581,6 +618,7 @@ export async function renewLease(formData: FormData): Promise<ActionResult> {
     const { data: renewal, error } = await supabase
       .from("tenancies")
       .insert({
+        user_id: user.id,
         lead_id: current.lead_id,
         space_id: current.space_id,
         tenancy_type: "lease",
@@ -596,12 +634,12 @@ export async function renewLease(formData: FormData): Promise<ActionResult> {
       .single();
     if (error) return fail(error);
 
-    await logActivity(supabase, {
+    await logActivity(supabase, user.id, {
       lead_id: current.lead_id,
       action_type: "lease_renewed",
       description: `Renewal drafted for ${current.tenant_name}: ${months} months at $${rent}/mo from ${startStr}`,
     });
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "lease_renewed",
       target_table: "tenancies",
       target_id: renewal.id,
@@ -625,6 +663,8 @@ export async function renewLease(formData: FormData): Promise<ActionResult> {
 export async function generateInvoices(tenancyId: string): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { data: tenancy, error: readError } = await supabase
       .from("tenancies")
       .select("*")
@@ -641,6 +681,7 @@ export async function generateInvoices(tenancyId: string): Promise<ActionResult>
     const invoiced = new Set((existing ?? []).map((i) => i.period_start));
 
     type NewInvoice = {
+      user_id: string;
       tenancy_id: string;
       space_id: string | null;
       period_start: string;
@@ -654,6 +695,7 @@ export async function generateInvoices(tenancyId: string): Promise<ActionResult>
     if (tenancy.tenancy_type === "licence") {
       if (!invoiced.has(tenancy.start_date) && (tenancy.fee_total ?? 0) > 0) {
         rows.push({
+          user_id: user.id,
           tenancy_id: tenancyId,
           space_id: tenancy.space_id,
           period_start: tenancy.start_date,
@@ -677,6 +719,7 @@ export async function generateInvoices(tenancyId: string): Promise<ActionResult>
           periodEndDate > leaseEnd ? tenancy.end_date : toDateStr(periodEndDate);
         if (!invoiced.has(periodStart)) {
           rows.push({
+            user_id: user.id,
             tenancy_id: tenancyId,
             space_id: tenancy.space_id,
             period_start: periodStart,
@@ -697,7 +740,7 @@ export async function generateInvoices(tenancyId: string): Promise<ActionResult>
     const { error } = await supabase.from("rent_invoices").insert(rows);
     if (error) return fail(error);
 
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "invoices_generated",
       target_table: "rent_invoices",
       target_id: tenancyId,
@@ -717,6 +760,8 @@ export async function updateInvoiceStatus(
 ): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { error } = await supabase
       .from("rent_invoices")
       .update({
@@ -725,7 +770,7 @@ export async function updateInvoiceStatus(
       })
       .eq("id", invoiceId);
     if (error) return fail(error);
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "invoice_" + status,
       target_table: "rent_invoices",
       target_id: invoiceId,
@@ -740,12 +785,65 @@ export async function updateInvoiceStatus(
   }
 }
 
+// ── Team management (0004) ───────────────────────────────────────────────────
+
+const DEMO_TEAM_ID = "a1000000-0000-0000-0000-000000000001";
+
+/** Invite a teammate by email. RLS restricts membership writes to admins. */
+export async function inviteMember(formData: FormData): Promise<ActionResult> {
+  try {
+    const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
+
+    const email = String(formData.get("email") ?? "").trim().toLowerCase();
+    const role = String(formData.get("role") ?? "rep");
+    if (!email || !email.includes("@"))
+      return { ok: false, error: "A valid email is required." };
+    if (!["rep", "manager", "admin"].includes(role))
+      return { ok: false, error: "Invalid role." };
+
+    const { data: existing } = await supabase
+      .from("memberships")
+      .select("id")
+      .ilike("invited_email", email);
+    if (existing && existing.length > 0)
+      return { ok: false, error: "That email is already invited." };
+
+    const { data, error } = await supabase
+      .from("memberships")
+      .insert({ team_id: DEMO_TEAM_ID, role, invited_email: email })
+      .select("id")
+      .single();
+    if (error) {
+      if (error.message.includes("row-level security"))
+        return { ok: false, error: "Only admins can invite team members." };
+      return fail(error);
+    }
+
+    await logAudit(supabase, user.id, {
+      actor: user.email ?? null,
+      action: "member_invited",
+      target_table: "memberships",
+      target_id: data.id,
+      payload: { email, role },
+      risk_level: "medium",
+    });
+    revalidatePath("/team");
+    return { ok: true, id: data.id };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 export async function updateTenancyStatus(
   tenancyId: string,
   status: string,
 ): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { data: tenancy, error } = await supabase
       .from("tenancies")
       .update({ status })
@@ -768,12 +866,12 @@ export async function updateTenancyStatus(
         .eq("id", tenancy.space_id);
     }
 
-    await logActivity(supabase, {
+    await logActivity(supabase, user.id, {
       lead_id: tenancy.lead_id,
       action_type: "tenancy_" + status,
       description: `Tenancy for ${tenancy.tenant_name} → ${status.replace("_", " ")}`,
     });
-    await logAudit(supabase, {
+    await logAudit(supabase, user.id, {
       action: "tenancy_status_changed",
       target_table: "tenancies",
       target_id: tenancyId,

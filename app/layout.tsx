@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { AuthNav } from "@/components/auth-nav";
 import { ToastProvider } from "@/components/toast";
+import { createClient } from "@/lib/supabase/server";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -9,11 +11,16 @@ export const metadata: Metadata = {
     "Track leads, follow-ups, conversions, and business performance in one workspace.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
   return (
     <html lang="en">
       <body className="antialiased bg-slate-50 text-slate-900 min-h-screen">
@@ -36,6 +43,7 @@ export default function RootLayout({
                 ["/bookings", "Bookings"],
                 ["/billing", "Billing"],
                 ["/dashboard", "Dashboard"],
+                ["/team", "Team"],
               ].map(([href, label]) => (
                 <Link
                   key={href}
@@ -46,10 +54,7 @@ export default function RootLayout({
                 </Link>
               ))}
             </nav>
-            <span className="ml-auto hidden sm:inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              Demo workspace
-            </span>
+            <AuthNav email={user?.email ?? null} />
           </div>
         </header>
         <main className="mx-auto max-w-7xl px-4 sm:px-6 py-6">{children}</main>

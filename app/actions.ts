@@ -12,6 +12,18 @@ export interface ActionResult {
 }
 
 const DEMO_TEAM_ID = "a1000000-0000-0000-0000-000000000001";
+const SIGN_IN_ERROR = "Please sign in to make changes.";
+
+type AuthedUser = { id: string; email?: string };
+
+async function requireUser(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+): Promise<AuthedUser | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user ? { id: user.id, email: user.email ?? undefined } : null;
+}
 
 function fail(error: unknown): ActionResult {
   const message =
@@ -27,6 +39,7 @@ async function logActivity(
     action_type: string;
     description: string;
     performed_by?: string | null;
+    user_id?: string | null;
   },
 ) {
   await supabase.from("activities").insert({
@@ -35,6 +48,7 @@ async function logActivity(
     action_type: entry.action_type,
     description: entry.description,
     performed_by: entry.performed_by ?? "system",
+    user_id: entry.user_id ?? null,
   });
 }
 
@@ -47,9 +61,11 @@ async function logAudit(
     target_id: string;
     payload: Record<string, unknown>;
     risk_level?: string;
+    user_id?: string | null;
   },
 ) {
   await supabase.from("audit_logs").insert({
+    user_id: entry.user_id ?? null,
     actor: entry.actor ?? "anonymous",
     action: entry.action,
     target_table: entry.target_table,
@@ -106,6 +122,8 @@ async function rescoreLead(
 export async function createLead(formData: FormData): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const full_name = String(formData.get("full_name") ?? "").trim();
     if (!full_name) return { ok: false, error: "Contact name is required." };
 
@@ -128,6 +146,7 @@ export async function createLead(formData: FormData): Promise<ActionResult> {
     const { data, error } = await supabase
       .from("leads")
       .insert({
+        user_id: user.id,
         team_id: DEMO_TEAM_ID,
         full_name,
         company: str("company"),
@@ -135,7 +154,7 @@ export async function createLead(formData: FormData): Promise<ActionResult> {
         phone: str("phone"),
         source: str("source"),
         stage,
-        owner_name: str("owner_name"),
+        owner_name: str("owner_name") ?? user.email?.split("@")[0] ?? null,
         deal_value,
         next_action_date: nextAction || null,
         enquiry_type: str("enquiry_type") ?? "long_term",
@@ -157,6 +176,7 @@ export async function createLead(formData: FormData): Promise<ActionResult> {
       action_type: "lead_created",
       description: `Lead created${data.company ? ` for ${data.company}` : ""}`,
       performed_by: data.owner_name,
+      user_id: user.id,
     });
     await logAudit(supabase, {
       actor: data.owner_name,
@@ -164,6 +184,7 @@ export async function createLead(formData: FormData): Promise<ActionResult> {
       target_table: "leads",
       target_id: data.id,
       payload: { full_name, stage, deal_value },
+      user_id: user.id,
     });
     await rescoreLead(supabase, data.id);
 
@@ -186,6 +207,8 @@ export async function updateLead(
 ): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
 
     const { data: before, error: readError } = await supabase
       .from("leads")
@@ -217,6 +240,7 @@ export async function updateLead(
         action_type: "stage_change",
         description: `Stage moved to ${fields.stage.charAt(0).toUpperCase() + fields.stage.slice(1)}`,
         performed_by: fields.owner_name ?? before.owner_name,
+        user_id: user.id,
       });
     }
     await logAudit(supabase, {
@@ -225,6 +249,7 @@ export async function updateLead(
       target_table: "leads",
       target_id: leadId,
       payload: update,
+      user_id: user.id,
     });
     await rescoreLead(supabase, leadId);
 
@@ -240,6 +265,8 @@ export async function updateLead(
 export async function addFollowUp(formData: FormData): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const leadId = String(formData.get("lead_id") ?? "");
     const note = String(formData.get("note") ?? "").trim();
     if (!note) return { ok: false, error: "Note is required." };
@@ -256,6 +283,7 @@ export async function addFollowUp(formData: FormData): Promise<ActionResult> {
     const { data, error } = await supabase
       .from("follow_ups")
       .insert({
+        user_id: user.id,
         lead_id: leadId,
         note,
         outcome,
@@ -278,6 +306,7 @@ export async function addFollowUp(formData: FormData): Promise<ActionResult> {
       action_type: "follow_up_logged",
       description: `Follow-up logged (${outcome}): ${note.slice(0, 80)}`,
       performed_by: lead.owner_name,
+      user_id: user.id,
     });
     await logAudit(supabase, {
       actor: lead.owner_name,
@@ -285,6 +314,7 @@ export async function addFollowUp(formData: FormData): Promise<ActionResult> {
       target_table: "follow_ups",
       target_id: data.id,
       payload: { lead_id: leadId, outcome },
+      user_id: user.id,
     });
     await rescoreLead(supabase, leadId);
 
@@ -300,6 +330,8 @@ export async function addFollowUp(formData: FormData): Promise<ActionResult> {
 export async function markWon(leadId: string): Promise<ActionResult> {
   try {
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { data: lead, error: readError } = await supabase
       .from("leads")
       .select("id, full_name, company, team_id, deal_value, currency, owner_name, stage")
@@ -318,6 +350,7 @@ export async function markWon(leadId: string): Promise<ActionResult> {
     const { data: deal, error: dealError } = await supabase
       .from("deals")
       .insert({
+        user_id: user.id,
         lead_id: leadId,
         team_id: lead.team_id,
         title,
@@ -336,6 +369,7 @@ export async function markWon(leadId: string): Promise<ActionResult> {
       action_type: "lead_won",
       description: `Lead marked as Won. Deal created: ${title}`,
       performed_by: lead.owner_name,
+      user_id: user.id,
     });
     await logAudit(supabase, {
       actor: lead.owner_name,
@@ -344,6 +378,7 @@ export async function markWon(leadId: string): Promise<ActionResult> {
       target_id: deal.id,
       payload: { lead_id: leadId, value: lead.deal_value },
       risk_level: "medium",
+      user_id: user.id,
     });
     await rescoreLead(supabase, leadId);
 
@@ -365,6 +400,8 @@ export async function markLost(
     if (!trimmed) return { ok: false, error: "Lost reason is required." };
 
     const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
     const { data: lead, error: readError } = await supabase
       .from("leads")
       .select("id, owner_name, stage")
@@ -384,6 +421,7 @@ export async function markLost(
       action_type: "lead_lost",
       description: `Lead marked as Lost. Reason: ${trimmed}`,
       performed_by: lead.owner_name,
+      user_id: user.id,
     });
     await logAudit(supabase, {
       actor: lead.owner_name,
@@ -392,6 +430,7 @@ export async function markLost(
       target_id: leadId,
       payload: { reason: trimmed },
       risk_level: "medium",
+      user_id: user.id,
     });
     await rescoreLead(supabase, leadId);
 
