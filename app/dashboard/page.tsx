@@ -8,6 +8,7 @@ import {
   STAGE_WEIGHTS,
   formatDate,
   formatMoney,
+  tenancyRevenue,
   type Lead,
   type Stage,
 } from "@/lib/types";
@@ -44,12 +45,22 @@ function StatCard({
 
 export default async function DashboardPage() {
   const supabase = await createClient();
-  const [{ data: leads, error }, spacesRes, tenanciesRes, invoicesRes] =
+  const [{ data: leads, error }, spacesRes, tenanciesRes, invoicesRes, projectsRes, summaryRes] =
     await Promise.all([
       supabase.from("leads").select("*"),
       supabase.from("spaces").select("*"),
       supabase.from("tenancies").select("*, spaces(code)"),
       supabase.from("rent_invoices").select("amount, status, due_date"),
+      supabase
+        .from("projects")
+        .select("*, tenancies(tenancy_type, start_date, end_date, rent_monthly, fee_total, tenant_name)"),
+      supabase
+        .from("agent_tasks")
+        .select("subject, body, approved_by, created_at")
+        .eq("task_type", "weekly_summary")
+        .eq("status", "approved")
+        .order("created_at", { ascending: false })
+        .limit(1),
     ]);
   // Leasing tables may not exist until migration 0002 is applied — degrade
   // gracefully to the classic pipeline dashboard rather than erroring.
@@ -66,6 +77,16 @@ export default async function DashboardPage() {
     due_date: string;
   }[];
   const billingReady = !invoicesRes.error;
+  const projects = (projectsRes.error ? [] : (projectsRes.data ?? [])) as unknown as (import("@/lib/types").Project & {
+    tenancies:
+      | (Pick<
+          import("@/lib/types").Tenancy,
+          "tenancy_type" | "start_date" | "end_date" | "rent_monthly" | "fee_total" | "tenant_name"
+        >)
+      | null;
+  })[];
+  const projectsReady = !projectsRes.error;
+  const weeklySummary = summaryRes.error ? null : (summaryRes.data?.[0] ?? null);
 
   if (error) {
     return (
@@ -259,6 +280,63 @@ export default async function DashboardPage() {
                 />
               )}
             </div>
+          )}
+
+          {weeklySummary && (
+            <section className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-5">
+              <h2 className="font-semibold text-slate-900">
+                📊 {weeklySummary.subject}
+                <span className="ml-2 text-xs font-normal text-slate-500">
+                  approved by {weeklySummary.approved_by ?? "manager"}
+                </span>
+              </h2>
+              <p className="mt-2 whitespace-pre-line text-sm text-slate-700">
+                {weeklySummary.body}
+              </p>
+            </section>
+          )}
+
+          {projectsReady && projects.length > 0 && (
+            <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <h2 className="font-semibold text-slate-900">Profitability</h2>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="py-2 pr-4 font-medium">Project</th>
+                      <th className="py-2 pr-4 font-medium">Tenant</th>
+                      <th className="py-2 pr-4 font-medium">Revenue</th>
+                      <th className="py-2 pr-4 font-medium">Cost</th>
+                      <th className="py-2 font-medium">Margin</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {projects.map((p) => {
+                      const revenue = p.tenancies ? tenancyRevenue(p.tenancies) : 0;
+                      const cost = p.actual_cost ?? 0;
+                      const margin = revenue - cost;
+                      const pct = revenue > 0 ? Math.round((margin / revenue) * 100) : null;
+                      return (
+                        <tr key={p.id}>
+                          <td className="py-2.5 pr-4 font-medium text-slate-900">{p.name}</td>
+                          <td className="py-2.5 pr-4 text-slate-600">
+                            {p.tenancies?.tenant_name ?? "—"}
+                          </td>
+                          <td className="py-2.5 pr-4">{formatMoney(revenue)}</td>
+                          <td className="py-2.5 pr-4">{formatMoney(cost)}</td>
+                          <td className={`py-2.5 font-semibold ${margin >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                            {formatMoney(margin)}
+                            {pct != null && (
+                              <span className="font-normal text-slate-400"> ({pct}%)</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           )}
 
           {leasingReady && (expiring.length > 0 || upcomingBookings.length > 0) && (

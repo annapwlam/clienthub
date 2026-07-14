@@ -42,7 +42,10 @@ export default async function RootLayout({
                 ["/tenancies", "Tenancies"],
                 ["/bookings", "Bookings"],
                 ["/billing", "Billing"],
+                ["/projects", "Projects"],
                 ["/dashboard", "Dashboard"],
+                ["/agent", "Agent"],
+                ["/audit", "Audit"],
                 ["/team", "Team"],
               ].map(([href, label]) => (
                 <Link

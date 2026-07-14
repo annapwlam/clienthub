@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ScoreBadge, StageBadge } from "@/components/badges";
+import { DraftEmailButton } from "@/components/agent-components";
 import {
   EditLeadInline,
   FollowUpForm,
@@ -130,7 +131,10 @@ export default async function LeadDetailPage({
             {l.company ? ` · ${l.company}` : ""}
           </p>
         </div>
-        <WonLostButtons lead={l} />
+        <div className="flex flex-wrap items-center gap-2">
+          <DraftEmailButton leadId={l.id} />
+          <WonLostButtons lead={l} />
+        </div>
       </div>
 
       {l.stage === "lost" && l.lost_reason && (

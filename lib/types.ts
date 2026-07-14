@@ -258,6 +258,63 @@ export interface RentInvoice {
   created_at: string;
 }
 
+export interface Project {
+  id: string;
+  tenancy_id: string | null;
+  name: string;
+  status: string; // active | completed | on_hold
+  budget_hours: number | null;
+  budget_cost: number | null;
+  actual_cost: number | null;
+  satisfaction_score: number | null;
+  churn_risk: boolean | null;
+  upsell_notes: string | null;
+  created_at: string;
+}
+
+export interface TimeEntry {
+  id: string;
+  project_id: string | null;
+  rep: string | null;
+  entry_date: string;
+  hours: number;
+  description: string | null;
+  created_at: string;
+}
+
+export interface AgentTask {
+  id: string;
+  lead_id: string | null;
+  task_type: string;
+  subject: string | null;
+  body: string | null;
+  payload: Record<string, unknown> | null;
+  risk_level: string;
+  status: string; // pending | approved | rejected | sent
+  approved_by: string | null;
+  created_at: string;
+}
+
+/** Contract revenue of a tenancy: monthly rent × term months, or licence fee. */
+export function tenancyRevenue(t: {
+  tenancy_type: string;
+  start_date: string;
+  end_date: string;
+  rent_monthly: number | null;
+  fee_total: number | null;
+}): number {
+  if (t.tenancy_type === "licence") return t.fee_total ?? 0;
+  const start = new Date(t.start_date + "T00:00:00");
+  const end = new Date(t.end_date + "T00:00:00");
+  const months = Math.max(
+    1,
+    Math.round(
+      (end.getTime() - start.getTime()) / (30.44 * 86_400_000),
+    ),
+  );
+  return (t.rent_monthly ?? 0) * months;
+}
+
 export function durationLabel(value: number | null, unit: string | null) {
   if (!value || !unit) return "—";
   return `${value} ${unit}`;

@@ -785,6 +785,133 @@ export async function updateInvoiceStatus(
   }
 }
 
+// ── Projects & time tracking (0006) ──────────────────────────────────────────
+
+export async function createProject(formData: FormData): Promise<ActionResult> {
+  try {
+    const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
+
+    const name = String(formData.get("name") ?? "").trim();
+    const tenancyId = String(formData.get("tenancy_id") ?? "");
+    if (!name || !tenancyId)
+      return { ok: false, error: "Project name and tenancy are required." };
+
+    const num = (k: string) => {
+      const v = String(formData.get(k) ?? "").trim();
+      return v ? Number(v) : null;
+    };
+
+    const { data, error } = await supabase
+      .from("projects")
+      .insert({
+        user_id: user.id,
+        tenancy_id: tenancyId,
+        name,
+        budget_hours: num("budget_hours"),
+        budget_cost: num("budget_cost"),
+        actual_cost: num("actual_cost") ?? 0,
+        status: "active",
+      })
+      .select("id")
+      .single();
+    if (error) return fail(error);
+
+    await logAudit(supabase, user.id, {
+      actor: user.email ?? null,
+      action: "project_created",
+      target_table: "projects",
+      target_id: data.id,
+      payload: { name, tenancy_id: tenancyId },
+    });
+    revalidatePath("/projects");
+    revalidatePath("/dashboard");
+    return { ok: true, id: data.id };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function logTime(formData: FormData): Promise<ActionResult> {
+  try {
+    const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
+
+    const projectId = String(formData.get("project_id") ?? "");
+    const hours = Number(String(formData.get("hours") ?? "").trim());
+    if (!projectId || !hours || hours <= 0)
+      return { ok: false, error: "Project and positive hours are required." };
+
+    const { data, error } = await supabase
+      .from("time_entries")
+      .insert({
+        user_id: user.id,
+        project_id: projectId,
+        rep:
+          String(formData.get("rep") ?? "").trim() ||
+          user.email?.split("@")[0] ||
+          null,
+        entry_date:
+          String(formData.get("entry_date") ?? "").trim() || toDateStr(new Date()),
+        hours,
+        description: String(formData.get("description") ?? "").trim() || null,
+      })
+      .select("id")
+      .single();
+    if (error) return fail(error);
+
+    await logAudit(supabase, user.id, {
+      actor: user.email ?? null,
+      action: "time_logged",
+      target_table: "time_entries",
+      target_id: data.id,
+      payload: { project_id: projectId, hours },
+    });
+    revalidatePath("/projects");
+    return { ok: true, id: data.id };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function updateProject(
+  projectId: string,
+  fields: {
+    status?: string;
+    actual_cost?: number | null;
+    satisfaction_score?: number | null;
+    churn_risk?: boolean;
+    upsell_notes?: string | null;
+  },
+): Promise<ActionResult> {
+  try {
+    const supabase = await createClient();
+    const user = await requireUser(supabase);
+    if (!user) return { ok: false, error: SIGN_IN_ERROR };
+
+    const { error } = await supabase
+      .from("projects")
+      .update(fields)
+      .eq("id", projectId);
+    if (error) return fail(error);
+
+    await logAudit(supabase, user.id, {
+      actor: user.email ?? null,
+      action: "project_updated",
+      target_table: "projects",
+      target_id: projectId,
+      payload: fields as Record<string, unknown>,
+    });
+    revalidatePath("/projects");
+    revalidatePath("/dashboard");
+    return { ok: true, id: projectId };
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 // ── Team management (0004) ───────────────────────────────────────────────────
 
 const DEMO_TEAM_ID = "a1000000-0000-0000-0000-000000000001";
